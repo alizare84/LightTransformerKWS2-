@@ -1,0 +1,9 @@
+python train.py kwt2_v8 --heads 8 --version 2
+#python train.py kwt2_v1 --heads 2 --version 1
+#python train.py kwt3_v1 --heads 3 --version 1
+#python train.py kwt1_v2 --heads 1 --version 2
+#python train.py kwt2_v2 --heads 2 --version 2
+#python train.py kwt3_v2 --heads 3 --version 2
+#python train.py kwt1_v3 --heads 1 --version 3
+#python train.py kwt2_v3 --heads 2 --version 3
+#python train.py kwt3_v3 --heads 3 --version 3

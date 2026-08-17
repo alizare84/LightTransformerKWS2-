@@ -1,0 +1,65 @@
+# Data and artifacts
+data/
+results/
+results_backup/
+*.tar.gz
+*.zip
+*.pth
+*.pt
+*.bin
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+kwt_env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.cursor/
+
+# Logs
+*.log
+logs/
+
+# Jupyter
+.ipynb_checkpoints
+
+# System / junk
+.DS_Store
+Thumbs.db
+*:Zone.Identifier
+._tmp_size_check.pth
+
+# Local backups and scratch
+96/
+article_text.txt
+qodana.yaml
+cuda_11.1.1_455.32.00_linux.run
+
+# kws_streaming is large; clone from Google Research (see README)
+kws_streaming/
