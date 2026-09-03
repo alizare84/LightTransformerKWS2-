@@ -205,7 +205,9 @@ Paper numbers that currently attach to the wrong parent (do not silently replace
 
 C0 95.62% and U2 95.65% stay associated with `dense_A3.pth`.
 
-## Required experiment (Phase 2 remaining; GPU may be busy)
+## Canonical structured sweep — completed 2026-09-03
+
+Command (log: `results/exp_struct_sweep_canonical_A3/run.log`):
 
 ```bash
 cp -a checkpoints/dense_A3.pth model.pth
@@ -215,11 +217,22 @@ python train.py exp_struct_sweep_canonical_A3 \
   --num-workers 1 --version 1
 ```
 
-Keep `results/exp_struct_sweep/` as the **legacy continued-training** run. Do not overwrite it.
+Baseline val this run: **95.12%** (same overlapping 3072-example loader; not equal to U2’s 96.16% or Table II’s 93.36%).
 
-If no α stays within 0.5 pp of the **canonical** dense val (expected ~96.16% on this loader, subject to val nondeterminism), the rule says fall back to the smallest tried amount or report that the ceiling admits no structured model at these amounts. **Do not keep 0.15 by habit.**
+| α | Stored params | Val acc | Drop vs 95.12% | ≤ 0.5 pp? |
+| ---: | ---: | ---: | ---: | --- |
+| 0.10 | 34,211 | 94.47% | 0.65 | no |
+| 0.15 | 31,147 | 94.47% | 0.65 | no |
+| **0.20** | **29,861** | **95.25%** | **−0.13** | **yes** |
+| 0.30 | 27,823 | 94.53% | 0.59 | no |
 
-Blocked at audit time: `python train.py exp_struct_sweep_v2` held the GPU. Canonical re-sweep starts after that process exits.
+**Selected: α=0.20** (most compressive amount that stayed under the ceiling). Paper Table II’s α=0.15 **fails** this rule on the canonical parent.
+
+Test (`results/exp_struct_sweep_canonical_A3/final_summary.md`): dense re-eval **95.78%** → pruned+INT8 **94.51%**; 29,861 params; 78.98 KB; 16.277M FLOPs. INT8 checkpoint: `checkpoints/struct_canonical_0.20_quant.pt`.
+
+Keep `results/exp_struct_sweep/` as the **legacy continued-training** run (α=0.15, test 94.42%). Do not overwrite it.
+
+Val nondeterminism remains: 0.10 drop was 0.39 pp on the killed 94.50% baseline and 0.65 pp here. Selection is therefore **conditional on this loader pass**, not a stable optimum. Phase 7 (finer α) is still useful; Phase 3 should train new seeds rather than reuse this single pass.
 
 ---
 
