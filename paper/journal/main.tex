@@ -1,0 +1,942 @@
+\documentclass[journal]{IEEEtran}
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+
+% Research-draft annotations (disabled once revision requirements are resolved).
+\newif\ifshowrevisionnotes
+\showrevisionnotesfalse
+
+\newcommand{\revisiontodo}[1]{%
+  \ifshowrevisionnotes
+  \par\smallskip
+  \noindent{\color{red}\textbf{Revision requirement:} #1}
+  \par\smallskip
+  \fi
+}
+
+\newcommand{\modelname}{KWT-GQA}
+
+\title{Weight Sharing and Structured Compression for
+Small-Footprint Keyword-Spotting Transformers}
+
+\author{Ali Zare%
+\thanks{Ali Zare is with Dotin Research and Studies Center,
+Datis Arian Qeshm (Dotin), Tehran, Iran
+(e-mail: alizare84@gmail.com).}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Reducing the number of stored weights does not necessarily reduce
+the computation or latency of a keyword-spotting model.
+This paper studies a small-footprint Transformer that combines
+cross-layer weight sharing with grouped-query attention.
+A width-48 encoder repeatedly applies one shared block, while a
+structured compression procedure removes intermediate convolutional
+channels, feed-forward units, and attention groups without changing
+the residual-stream width.
+On the 12-class Google Speech Commands v1 task, the tied model
+achieves $94.15\pm0.33\%$ accuracy with 36,516 unique parameters
+over five training seeds.
+Its untied counterpart has 219,204 parameters and achieves
+$94.79\pm0.46\%$ over three seeds.
+These results describe an approximately sixfold reduction in unique
+parameters at unchanged architectural computation, rather than a
+paired estimate of the accuracy effect of sharing.
+Validation-selected structured pruning followed by dynamic
+quantization of linear layers yields a 29,861-parameter model
+with $93.83\pm0.41\%$ accuracy over five seeds.
+Training the same reduced architecture from scratch and subsequently
+quantizing it reaches $93.66\pm0.56\%$; the available results do not
+establish an accuracy advantage for prune-then-fine-tune.
+We distinguish unique parameters, arithmetic operations, tensor
+payload, serialized artifact size, and measured runtime.
+Analytical dense and pruned MAC totals are 31.273M and 24.071M,
+respectively; tying alone does not reduce MACs.
+The current evidence establishes a compact Transformer operating
+point, but does not establish superiority over parameter-matched
+untied Transformers or compact convolutional baselines.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Keyword spotting, Transformer, weight sharing,
+grouped-query attention, structured pruning,
+dynamic quantization.
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+Keyword spotting (KWS) identifies predefined words in short audio
+segments and is commonly used as an entry point to speech interfaces.
+Small-footprint KWS models must balance recognition accuracy with
+storage, computation, and deployment constraints
+\cite{zhang2017hello,warden2018speech}.
+These constraints are related but not interchangeable.
+A model may store few weights while repeatedly applying them,
+and an integer-weight representation may reduce storage without
+improving latency in a particular execution environment.
+
+Compact convolutional models, including DS-CNN, TC-ResNet,
+and BC-ResNet, provide strong reference points for this setting
+\cite{zhang2017hello,choi2019temporal,kim2021bcresnet}.
+Transformer-based KWS models demonstrate the applicability of
+self-attention to short speech inputs
+\cite{berg2021kwt}.
+The question considered here is not whether a Transformer is
+universally preferable to a convolutional network.
+Instead, we examine how a Transformer can allocate a small
+unique-parameter budget through cross-layer sharing and a reduced
+number of key/value projections.
+
+Cross-layer weight sharing offers a direct storage--computation
+trade-off.
+Reusing one block across multiple encoder iterations reduces the
+number of independently stored weights, but retains the computation
+of each iteration.
+Grouped-query attention (GQA) reduces the number of key/value
+projections while preserving multiple query heads
+\cite{ainslie2023gqa}.
+It also exposes attention groups as a structured removal unit.
+These properties motivate studying sharing and GQA jointly,
+without assuming that either improves accuracy under every budget.
+
+We investigate these choices using \modelname{}, a KWT-style model
+with a convolutional front-end, a width-48 encoder, and twelve
+applications of a shared pre-normalized attention block.
+After training, a structured compression procedure reduces
+intermediate dimensions while keeping residual additions valid.
+Dynamic quantization is then applied to linear layers as a separate
+representation change.
+
+The present study extends our earlier untied GQA-based KWS model
+\cite{zareprev}.
+The additional elements are cross-layer sharing, physical
+reconstruction of structurally pruned tensors, and a multi-seed
+evaluation on GSC v1-12.
+The earlier v2 result is not used as a directly matched accuracy
+baseline for the present v1 experiments.
+
+Our current contributions are:
+\begin{enumerate}
+  \item An empirical characterization of a tied-GQA KWS model
+  with 36,516 unique parameters, including a descriptive comparison
+  with its untied counterpart.
+  \item A structured compression procedure that preserves
+  cross-layer sharing and residual compatibility, evaluated against
+  training the same reduced architecture from scratch.
+  \item A stage-separated evaluation framework that distinguishes
+  architectural reductions from representation and runtime effects.
+\end{enumerate}
+
+The scope of these contributions is deliberately limited.
+The available experiments do not establish that sharing is better
+than conventional width or depth reduction at a matched parameter
+budget, nor do they isolate the accuracy contribution of GQA from
+tying: parameter-matched untied, shared-depth, and tied-MHA
+controls are left to future work.
+They also do not establish superiority over compact CNNs under a
+common training and deployment protocol.
+
+\section{Related Work}
+
+\subsection{Small-Footprint Keyword Spotting}
+
+Google Speech Commands provides a widely used benchmark for
+small-footprint speech classification
+\cite{warden2018speech}.
+DS-CNN established practical convolutional baselines for
+resource-constrained KWS
+\cite{zhang2017hello}.
+TC-ResNet and BC-ResNet subsequently explored efficient temporal
+and broadcasted residual structures
+\cite{choi2019temporal,kim2021bcresnet}.
+
+These models are relevant reference architectures for the parameter
+regime considered here.
+However, published results may differ in dataset version,
+class construction, preprocessing, augmentation, and training budget.
+Consequently, literature values are not treated as matched
+experimental evidence.
+
+\subsection{Transformers, Grouped Queries, and Weight Sharing}
+
+KWT applies Transformer machinery to keyword spotting
+\cite{berg2021kwt}.
+GQA reduces the number of key/value heads relative to query heads
+\cite{ainslie2023gqa}.
+For a fixed query-head count and sequence length, this reduction
+does not remove the full per-query-head attention computation.
+
+ALBERT-style parameter sharing reuses parameters across depth
+\cite{lan2020albert}.
+The relevant effect in the present setting is a reduction in unique
+stored parameters rather than an automatic reduction in arithmetic
+operations.
+Our architecture combines this sharing mechanism with GQA in a
+small-width KWS encoder.
+
+\subsection{Pruning and Quantization}
+
+Unstructured magnitude pruning removes individual nonzero weights
+without necessarily changing dense tensor shapes
+\cite{han2015learning}.
+Structured pruning removes complete units or channels and can
+therefore reduce dense architectural computation when the
+corresponding tensors are rebuilt
+\cite{li2017pruning}.
+
+Integer quantization changes the representation and execution of
+selected operations
+\cite{jacob2018quantization}.
+The dynamic quantization path used here is narrower than a
+full-integer deployment graph: linear weights are quantized,
+whereas several other model components remain floating point.
+
+The novelty sought in this study is not a new general-purpose
+pruning or quantization algorithm.
+Rather, it is an empirical understanding of how established
+mechanisms interact in a small tied-GQA KWS model.
+
+\section{Research Questions and Evaluation Quantities}
+
+\subsection{Research Questions}
+
+The experimental design is organized around four questions:
+\begin{enumerate}
+  \item What storage--accuracy trade-off is obtained by sharing an
+  encoder block rather than storing separate blocks?
+  \item How do shared depth and the number of key/value groups
+  affect accuracy and computational cost?
+  \item Does prune-then-fine-tune provide an advantage over training
+  the resulting small architecture directly?
+  \item Which architectural and representation reductions
+  translate into lower measured deployment costs?
+\end{enumerate}
+
+The existing results provide partial evidence for the first,
+third, and fourth questions.
+The second question and the parameter-matched interpretation of
+the first require additional controls.
+
+\subsection{Definitions}
+
+We use the following distinct quantities.
+
+\paragraph{Unique parameters.}
+Let $\Theta_{\mathrm{unique}}$ contain each learned parameter tensor
+once, regardless of how many times it is referenced or executed:
+\begin{equation}
+P_{\mathrm{unique}}
+=
+\sum_{\theta\in\Theta_{\mathrm{unique}}}
+\operatorname{numel}(\theta).
+\end{equation}
+Quantized packed weights and learned biases remain part of this
+count.
+Non-learned buffers are reported separately.
+
+\paragraph{Architectural arithmetic.}
+MACs count multiply--accumulate operations for one model forward
+pass on a specified feature tensor.
+Where FLOPs are reported as $2\times\mathrm{MACs}$, this convention
+is stated explicitly.
+Softmax, normalization, nonlinearities, indexing, and quantization
+overheads must either be counted separately or identified as
+excluded.
+
+\paragraph{Tensor payload.}
+Payload is the byte count of unique stored tensor data, including
+the stated quantization metadata and buffers.
+The deduplication rule must identify the actual shared data,
+rather than counting every module reference.
+
+\paragraph{Serialized artifact size.}
+Artifact size is the actual byte size of a saved, reloadable
+representation.
+It may exceed the tensor payload because of serialization metadata,
+packing, and container overhead.
+
+\paragraph{Runtime cost.}
+Latency and peak memory depend on the hardware, runtime,
+thread configuration, operator implementation, and measurement
+boundary.
+They cannot be inferred from parameter counts alone.
+
+We use bytes as the primary storage unit.
+When converted, $\mathrm{KB}=10^3$ bytes and
+$\mathrm{KiB}=2^{10}$ bytes.
+
+\section{Tied-GQA Architecture}
+
+\subsection{Input and Convolutional Front-End}
+
+The input is an MFCC representation with $T=98$ frames and
+40 coefficients per frame, produced by the
+\texttt{kws\_streaming} TensorFlow pipeline used in this
+repository.
+Audio is resampled to 16\,kHz.
+Features use an 80-bin mel filterbank, a 30\,ms window,
+a 10\,ms hop, and a 40-coefficient DCT, with the upper mel edge
+at 7.6\,kHz.
+Training applies the pipeline's default augmentations
+(time shift, resampling, background mixing, and SpecAugment).
+Features are then normalized with per-coefficient mean and
+standard deviation estimated on the training set.
+Sequences shorter than 98 frames are zero-padded; longer
+sequences are randomly cropped in training and center-cropped
+in evaluation.
+TensorFlow feature extraction is not fully seed-controlled;
+Torch/NumPy random state and cropping are.
+
+Two one-dimensional convolutional layers map channels
+$40\rightarrow48\rightarrow48$.
+The front-end uses kernel size 3, stride 1, and padding 1,
+with GELU and batch normalization, preserving the temporal length.
+
+A learned absolute positional embedding of shape
+$1\times98\times48$ is added before the encoder.
+The input dropout probability is 0.05.
+
+\subsection{Shared Encoder}
+
+The residual width is $d=48$ and the feed-forward hidden width
+is $d_{\mathrm{ff}}=96$.
+A pre-normalized encoder block applies
+\begin{align}
+x &\leftarrow x+
+\operatorname{Dropout}\!\left(
+\operatorname{GQA}(\operatorname{LN}_1(x))
+\right),\\
+x &\leftarrow x+
+\operatorname{Dropout}\!\left(
+\operatorname{FFN}(\operatorname{LN}_2(x))
+\right).
+\end{align}
+The FFN uses GELU and the residual dropout probability is 0.1.
+
+In the tied model, the same block is applied $L=12$ times.
+In the untied model, each iteration has independent block
+parameters.
+The forward-pass structure and tensor dimensions are otherwise
+held fixed in the described comparison.
+
+A relative-position bias table of shape
+$(2T-1)\times H=195\times8$ is shared across encoder iterations.
+The model also retains the absolute positional embedding.
+We adopt both mechanisms following common practice in recent
+acoustic Transformers; absolute-only, relative-only, and combined
+ablations are not reported here and are left to future work.
+A final normalization, temporal mean pooling, and a linear
+classifier produce twelve logits.
+
+\subsection{Grouped-Query Attention}
+
+The model uses $H=8$ query heads, $G=4$ key/value groups,
+and head dimension $d_h=6$.
+The projections produce
+\begin{equation}
+Q\in\mathbb{R}^{T\times Hd_h},
+\qquad
+K,V\in\mathbb{R}^{T\times Gd_h}.
+\end{equation}
+Each key/value group serves the associated query heads.
+
+After pruning, the number of query heads and key/value groups may
+decrease while $d_h$ and residual width $d$ remain fixed.
+Thus the query projection maps $d\rightarrow H'd_h$ and the output
+projection maps $H'd_h\rightarrow d$.
+This preserves the shape required by residual addition.
+
+\subsection{Reported Parameter Inventory}
+
+Table~\ref{tab:inventory} records the dense tied inventory
+verified against checkpoints
+(\texttt{dense\_A3\_seed*} / \texttt{untied\_A1\_seed*}).
+
+\begin{table}[t]
+\caption{Reported dense tied parameter inventory.}
+\label{tab:inventory}
+\centering
+\begin{tabular}{lr}
+\toprule
+Component & Unique parameters\\
+\midrule
+Convolutional front-end & 12,960\\
+Absolute positional embedding & 4,704\\
+Relative-position bias & 1,560\\
+Shared encoder block & 16,608\\
+Final LayerNorm & 96\\
+Classifier & 588\\
+\midrule
+Total tied & 36,516\\
+Total untied & 219,204\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+For a shared block containing $P_{\mathrm{block}}$ parameters
+and all remaining parameters totaling $P_{\mathrm{other}}$,
+\begin{align}
+P_{\mathrm{tied}}&=P_{\mathrm{other}}+P_{\mathrm{block}},\\
+P_{\mathrm{untied}}&=P_{\mathrm{other}}+LP_{\mathrm{block}}.
+\end{align}
+The ratio is not generally equal to $L$, because the front-end,
+position embeddings, and classifier are not replicated.
+
+\subsection{Analytical Attention Cost}
+
+For full attention, the two matrix products $QK^\top$ and $AV$
+require
+\begin{equation}
+M_{\mathrm{attention}}
+=
+2LT^2Hd_h
+\label{eq:attention-macs}
+\end{equation}
+MACs, excluding projections and other operators.
+
+Under the described dense dimensions, this is
+11,063,808 MACs.
+For the pruned configuration with $H'=6$ and unchanged
+$d_h=6$, it is 8,297,856 MACs.
+
+Whole-model counts are obtained by the same shape arithmetic
+over the front-end, all twelve encoder applications
+(projections, attention matmuls, and FFN), and the classifier,
+excluding softmax, LayerNorm, GELU, and indexing.
+This yields 31.273M MACs (62.546M FLOPs under the
+$2\times\mathrm{MACs}$ convention) for the dense tied model and
+24.071M MACs (48.142M FLOPs) for the selected pruned shape.
+An earlier draft reported 10.358M / 8.139M MACs from the
+\texttt{thop} profiler, which does not instrument
+\texttt{torch.matmul} and therefore omitted the attention
+matmuls above.
+Table~\ref{tab:macs} gives the component breakdown.
+
+\begin{table}[t]
+\caption{Analytical MAC breakdown for one forward pass
+($T{=}98$). Softmax, normalization, and elementwise nonlinearities
+are excluded. FLOPs use $2\times\mathrm{MACs}$.}
+\label{tab:macs}
+\centering
+\footnotesize
+\begin{tabular}{lrr}
+\toprule
+Component & Dense (M) & Pruned (M)\\
+\midrule
+Conv front-end & 1.242 & 0.983\\
+Attention projections ($\times12$) & 8.129 & 6.097\\
+Attention matmuls Q$K^\top$+AV ($\times12$) & 11.064 & 8.298\\
+FFN ($\times12$) & 10.838 & 8.693\\
+Classifier & $<$0.001 & $<$0.001\\
+\midrule
+Total MACs & 31.273 & 24.071\\
+Total FLOPs & 62.546 & 48.142\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Tying-Preserving Structured Compression}
+
+\subsection{Admissible Pruning Axes}
+
+Residual width $d$ is kept fixed.
+The following dimensions may be reduced:
+\begin{enumerate}
+  \item intermediate channels between the two front-end
+  convolutions;
+  \item FFN hidden units;
+  \item complete GQA groups and their associated query heads.
+\end{enumerate}
+
+Removing a unit requires consistent slicing of all dependent
+tensors.
+For convolutional channels, this includes the first convolution's
+outputs, the second convolution's inputs, and the relevant batch
+normalization parameters and running statistics.
+For FFN units, corresponding first-layer rows and second-layer
+columns are removed.
+For attention groups, query, key/value, output-projection, and
+relative-bias indexing must remain consistent.
+
+\subsection{Importance Ranking and Reconstruction}
+
+Units are ranked by bidirectional L1 magnitude and then physically
+rebuilt as smaller modules.
+Only one copy of a shared block is reconstructed, and all encoder
+iterations continue to reference that copy.
+
+For an intermediate convolutional channel, the score is the sum of
+outgoing Conv1 magnitudes (and bias, if present), incoming Conv2
+magnitudes, and the associated batch-normalization scale when
+present.
+For an FFN hidden unit, the score is the sum of the corresponding
+row of the first linear layer and column of the second, plus the
+first-layer bias when present.
+For a GQA group, the score aggregates L1 magnitudes over the
+associated rows/columns of $Q$, $K$, $V$, and the output
+projection.
+Kept indices are the top-$k$ scores in descending order; at least
+one unit is retained on each axis.
+
+This bidirectional scoring is the implementation used for all
+journal results.
+It differs from the conference description, which used
+incoming-only convolutional/FFN scores.
+
+\subsection{Validation-Based Amount Selection}
+
+Candidate pruning amounts are
+$\alpha\in\{0.10,0.15,0.20,0.30\}$.
+Each candidate is initialized from a trained dense tied checkpoint
+and fine-tuned for 2,000 AdamW steps at learning rate $10^{-4}$.
+
+The selection rule retains the most compressive candidate whose
+mean validation accuracy drop across five seeds does not exceed
+0.5 percentage points.
+This is a constraint on the observed mean, not a per-seed
+guarantee or a statistical upper confidence bound.
+
+The selected $\alpha=0.20$ configuration has 38 intermediate
+convolutional channels, 77 FFN units, six query heads, and three
+key/value groups.
+The reported parameter count is 29,861.
+
+\subsection{Dynamic Linear Quantization}
+
+After selecting the pruned architecture, PyTorch dynamic
+quantization is applied to \texttt{nn.Linear} modules using
+the \texttt{fbgemm} backend and a per-channel weight configuration
+\cite{paszke2019pytorch}.
+
+Linear weights are represented as INT8, whereas linear biases,
+convolutions, normalizations, and position-related tensors remain
+floating point under this path.
+At linear computation time, activations are quantized dynamically
+for the integer operation.
+This is therefore a mixed execution graph rather than a
+full-integer deployment.
+
+Quantization does not reduce the number of architectural weight
+elements.
+It can change their representation, serialized size, and execution
+cost.
+Those effects are measured separately from shape reductions caused
+by pruning.
+
+\section{Experimental Protocol}
+
+\subsection{Dataset and Training}
+
+Experiments use Google Speech Commands v1 with ten target keywords,
+unknown, and silence
+(\texttt{yes}, \texttt{no}, \texttt{up}, \texttt{down},
+\texttt{left}, \texttt{right}, \texttt{on}, \texttt{off},
+\texttt{stop}, \texttt{go}, plus \texttt{unknown} and
+\texttt{silence}).
+Official hash-based splits yield 51,094 training, 6,798 validation,
+and 6,835 test utterances.
+Out-of-vocabulary words map to \texttt{unknown}; silence clips are
+drawn from the corpus background-noise folder through the
+\texttt{kws\_streaming} processor.
+
+Training uses AdamW
+\cite{loshchilov2019decoupled},
+learning rate $10^{-3}$, weight decay $5\times10^{-4}$,
+label smoothing 0.1, and batch size 512.
+The schedule uses a ten-epoch linear warm-up followed by
+cosine decay over a nominal 23,000-step budget.
+Early stopping monitors validation loss with patience 15 and
+minimum delta $5\times10^{-4}$; the best validation checkpoint is
+retained for test evaluation.
+On the hardware used for the multi-seed runs, a full dense train
+is on the order of a few GPU-hours; the 2,000-step pruning
+fine-tune is on the order of ten minutes.
+
+\subsection{Variants and Seeds}
+
+We distinguish:
+\begin{itemize}
+  \item U: untied GQA model;
+  \item T: dense tied GQA model;
+  \item T-Q: T with dynamic linear quantization;
+  \item T-P: structurally pruned and fine-tuned T, before
+  quantization;
+  \item T-P-Q: T-P after dynamic linear quantization;
+  \item S-Q: the same reduced architecture trained from scratch
+  and subsequently quantized.
+\end{itemize}
+
+U currently uses seeds $\{0,1,2\}$ because seeds 3 and 4 were not
+trained for the untied baseline; all U--T comparisons therefore use
+only the three shared seeds and are descriptive.
+T, T-Q, T-P-Q, and S-Q use seeds $\{0,1,2,3,4\}$.
+The pruning sweep is reported over the five dense-T seeds.
+For S-Q, weights and buffers of the reduced architecture are
+reinitialized before training; no parent T-P state is retained.
+T-P-Q is obtained by quantizing the fine-tuned float pruned
+checkpoint for the same seed.
+
+\subsection{Statistical Reporting}
+
+Accuracy is reported as mean and standard deviation across seeds.
+Paired comparisons use the same documented seed-level pairing
+and explicitly define the direction of the difference.
+
+A non-significant test is not interpreted as proof of equivalence.
+A formal equivalence claim would require a justified margin and
+an appropriate equivalence analysis.
+
+Clip-level macro FAR and FRR are one-vs-rest quantities derived
+from the twelve-class confusion matrix.
+They are not streaming false accepts per hour and do not replace
+threshold-based wake-word evaluation.
+
+\subsection{Runtime Protocol}
+
+Host latency is measured with \texttt{scripts/bench\_latency\_v2.py}
+on an x86\_64 CPU under PyTorch 2.0 with the \texttt{fbgemm}
+backend, \texttt{torch.set\_num\_threads(1)}, batch size one,
+\texttt{model.eval()}, and synthetic MFCC-shaped inputs
+($1\times98\times40$).
+Each session uses 100 warm-up forwards and 1,000 timed forwards
+with \texttt{torch.no\_grad()} and \texttt{time.perf\_counter}.
+We report median, interquartile range, and 95th percentile over
+timed forwards for T, T-Q, and T-P-Q.
+These are host-CPU forward timings, not streaming end-to-end,
+MCU, or energy measurements.
+
+\section{Results}
+
+\subsection{Sharing and the Dense Operating Point}
+
+Table~\ref{tab:accuracy} summarizes the currently reported results.
+The untied and tied models achieve
+$94.74\pm0.35\%$ and $94.15\pm0.33\%$, respectively, both over five seeds.
+The unique-parameter ratio is approximately six, while the
+described computation graph retains twelve block executions.
+
+Because no parameter-matched untied
+control is available, this comparison is descriptive.
+It does not establish that sharing is the best way to allocate
+a fixed small parameter budget.
+
+\begin{table}[t]
+\caption{GSC v1-12 accuracy.
+Values are mean $\pm$ sample standard deviation across seeds.
+T-P is the float model after the selected pruning amount and
+fine-tuning; T-P-Q is the same checkpoint after dynamic linear
+quantization.}
+\label{tab:accuracy}
+\centering
+\footnotesize
+\begin{tabular}{lrrl}
+\toprule
+Variant & Seeds & Parameters & Accuracy (\%)\\
+\midrule
+U & 5 & 219,204 & $94.74\pm0.35$\\
+T & 5 & 36,516 & $94.15\pm0.33$\\
+T-Q & 5 & 36,516 & $94.18\pm0.34$\\
+T-P & 5 & 29,861 & $93.93\pm0.36$\\
+T-P-Q & 5 & 29,861 & $93.83\pm0.41$\\
+S-Q & 5 & 29,861 & $93.66\pm0.56$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Structured Pruning Sweep}
+
+Table~\ref{tab:sweep} reports the available sweep results.
+The $\alpha=0.30$ candidate exceeds the mean validation-drop
+ceiling, whereas $\alpha=0.20$ satisfies it and yields the
+smallest eligible architecture.
+
+\begin{table}[t]
+\caption{Reported structured pruning sweep after 2,000
+fine-tuning steps. Accuracy values are for float models.
+Validation drop is in percentage points.}
+\label{tab:sweep}
+\centering
+\footnotesize
+\begin{tabular}{crll}
+\toprule
+$\alpha$ & Parameters & Val.\ drop & Test acc.\ (\%)\\
+\midrule
+0.10 & 34,211 & $-0.31\pm0.70$ & $94.73\pm0.26$\\
+0.15 & 31,147 & $0.20\pm1.07$ & $94.11\pm0.36$\\
+0.20 & 29,861 & $0.12\pm0.82$ & $93.93\pm0.36$\\
+0.30 & 27,823 & $0.90\pm1.02$ & $93.60\pm0.55$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The relatively high accuracy at $\alpha=0.10$ does not isolate
+a benefit of removing weights.
+The additional optimization steps are a confounding factor.
+A matched control that continues dense T for 2,000 steps without
+pruning (\texttt{scripts/run\_t\_ft\_control.py}) is currently running;
+results will be incorporated once all five seeds are complete.
+Until then, isolating continued training from structural adaptation
+remains a limitation of the current evidence.
+Amount selection used only the mean validation-drop rule above;
+test-set sweep accuracies in Table~\ref{tab:sweep} are reported
+for completeness and were not used to choose $\alpha$.
+
+\subsection{Pruning and Quantization Effects}
+
+Paired comparisons are recomputed from the five shared seeds
+in \texttt{results/per\_seed\_metrics.csv}.
+Dense linear quantization changes mean accuracy from
+$94.15\%$ to $94.18\%$.
+The paired difference $\Delta_s=A_{\mathrm{T-Q},s}-A_{\mathrm{T},s}$
+has mean $+0.03$ percentage points
+(std.\ $0.02$, $t=3.16$, df $=4$, two-sided $p=0.034$,
+95\% CI $[0.01,0.05]$).
+The effect is statistically detectable at $\alpha=0.05$ but
+negligible in magnitude.
+
+For the selected reduced architecture, the float and quantized
+means are $93.93\%$ and $93.83\%$.
+Most of the T-to-T-P-Q gap therefore arises before quantization.
+For
+\begin{equation}
+\Delta_s=A_{\mathrm{T-P-Q},s}-A_{\mathrm{T},s},
+\end{equation}
+the mean is $-0.32$ percentage points
+(std.\ $0.37$, $t=-1.92$, df $=4$, two-sided $p=0.13$,
+95\% CI $[-0.78,+0.14]$).
+These results neither demonstrate equivalence nor provide strong
+evidence for a nonzero mean difference at the available sample size.
+
+\subsection{Training the Reduced Architecture from Scratch}
+
+S-Q achieves $93.66\pm0.56\%$, compared with
+$93.83\pm0.41\%$ for T-P-Q.
+For $\Delta_s=A_{\mathrm{S-Q},s}-A_{\mathrm{T-P-Q},s}$,
+the mean is $-0.18$ percentage points
+(std.\ $0.64$, $t=-0.61$, df $=4$, two-sided $p=0.57$,
+95\% CI $[-0.97,+0.62]$).
+No accuracy advantage for prune-then-fine-tune is established by
+these results.
+
+If a trained dense parent is already available, 2,000-step
+fine-tuning can provide a low incremental-cost route to a smaller
+model.
+This does not imply lower total cost from a cold start:
+parent training (nominal 23k-step budget with early stopping),
+the $\alpha$ sweep with 2,000 fine-tuning steps per candidate,
+and scratch training of the reduced architecture all consume
+resources.
+
+\subsection{Host Runtime}
+
+Table~\ref{tab:latency} summarizes the audited host-CPU forward
+timings.
+Median latency is 12.10\,ms for T, 13.16\,ms for T-Q, and
+12.38\,ms for T-P-Q.
+Dynamic INT8 therefore does not accelerate this workload on the
+measured x86\_64 host; the T-Q median is about 9\% slower than T,
+while T-P-Q remains within a few percent of T.
+Quantized models show lower 95th-percentile latency
+(16.7--17.3\,ms versus 22.8\,ms for T), suggesting more predictable
+tails rather than lower median cost.
+Hardware with native INT8 acceleration may behave differently.
+
+\begin{table}[t]
+\caption{Single-thread CPU forward latency (batch 1, 100 warm-up,
+1,000 timed runs). Times in milliseconds.}
+\label{tab:latency}
+\centering
+\footnotesize
+\begin{tabular}{lrrr}
+\toprule
+Variant & Median & IQR & P95\\
+\midrule
+T & 12.10 & $[10.54,15.45]$ & 22.75\\
+T-Q & 13.16 & $[12.51,14.10]$ & 16.69\\
+T-P-Q & 12.38 & $[11.85,13.39]$ & 17.25\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Storage and Operation Counts}
+
+Analytical MACs are reported in Table~\ref{tab:macs}:
+31.273M for dense T and 24.071M for the selected pruned shape
+(about 23\% fewer architectural MACs), while tying alone does not
+reduce MACs.
+Serialized artifact sizes on disk are approximately 182\,KB for T,
+113\,KB for T-Q, and 937\,KB for U
+(\texttt{results/storage\_breakdown.csv}).
+The T versus U file-size gap reflects shared-parameter values and
+container behavior; a na\"ive \texttt{state\_dict} still lists
+per-iteration keys, so unique-parameter count remains the primary
+storage claim.
+Quantized payloads separate INT8 weights, scale/zero-point
+metadata, and remaining FP32 tensors; dynamic quantization reduces
+file size without changing the architectural MAC count.
+
+\section{Discussion}
+
+\subsection{Weight Sharing as a Storage--Computation Trade-off}
+
+The current results support the feasibility of a KWS Transformer
+with few unique parameters and repeated shared computation.
+They do not imply that repeated computation is inexpensive.
+Whether this trade-off is attractive depends on which resource
+is constrained.
+
+A parameter-matched shallow or narrow untied Transformer may
+provide a different accuracy--latency balance.
+Shared-depth controls are therefore necessary to determine whether
+twelve iterations provide useful additional computation compared
+with three or six iterations.
+
+\subsection{The Role of GQA}
+
+GQA reduces key/value projection dimensions and provides grouped
+units for structured removal.
+However, for fixed query-head count, head dimension, and sequence
+length, the two attention matrix products retain the cost in
+Eq.~\eqref{eq:attention-macs}.
+
+The current experiments do not isolate GQA from tying.
+A tied-MHA control is needed at fixed width, followed by a
+separate comparison at a similar parameter budget.
+
+\subsection{Pruning as Adaptation Versus Architecture Selection}
+
+The scratch result suggests a useful distinction.
+Pruning may serve as a way to adapt an existing trained model,
+or as a way to discover a smaller architecture.
+The present data do not establish that inherited weights improve
+final accuracy over direct training of the selected architecture.
+
+Accordingly, the contribution is not framed as a universal
+accuracy benefit of pruning.
+Its practical value must be assessed using adaptation cost,
+final accuracy, and deployment cost together.
+
+\subsection{Memory Beyond Stored Weights}
+
+Small weight storage does not guarantee small working memory.
+For example, an explicitly materialized FP32 attention tensor
+with shape $8\times98\times98$ contains 307,328 bytes.
+This is an illustrative tensor size, not a measured peak-memory
+result.
+Actual memory depends on operator fusion, allocation lifetimes,
+and the execution backend.
+
+This distinction motivates measuring runtime memory rather than
+using parameter bytes as its proxy.
+
+\section{Limitations}
+
+The principal evidence currently uses GSC v1-12.
+All five untied seeds are now complete and are included in the U row
+of Table~\ref{tab:accuracy}.
+A parameter-matched
+untied depth-1 control (U-L1; 36{,}516 unique parameters), a tied-MHA
+control ($G{=}H{=}8$), a matched T$+$2{,}000-step fine-tuning control
+without pruning, and seed-0 position ablations remain queued under the
+same training recipe
+(\texttt{scripts/run\_revision\_controls.sh}).
+Architecture and position controls therefore remain incomplete.
+
+Compact CNNs (DS-CNN, TC-ResNet, BC-ResNet) have not been
+retrained under the same recipe.
+Literature CNN figures are therefore kept out of the main results
+table and are not treated as matched experimental evidence.
+
+The available runtime measurements are host-CPU forward timings,
+not streaming end-to-end or energy measurements; peak memory was
+not profiled.
+ONNX exports of dense tied and untied checkpoints are provided for
+offline MCU tooling (\texttt{results/onnx/}), but
+STM32Cube.AI / ST Edge AI Analyze estimates (Flash, RAM, MAC/cycle
+on Cortex-M4/M7) were not obtained in this environment because the
+vendor tool is not installed here.
+On-silicon measured latency and energy on a NUCLEO board remain
+future work.
+
+Dynamic quantization affects linear layers only.
+The model is not a full-integer graph.
+Operation counts are analytical MAC totals under the stated
+exclusions; they are not profiler traces of every kernel.
+
+Legacy noise results from a different pruning amount and an
+unmatched checkpoint are excluded from the main evidence.
+A valid robustness comparison requires matched parent checkpoints,
+noise realizations, and final model configurations.
+
+The small number of training seeds limits the precision of
+between-method comparisons.
+Non-rejection of a difference is not evidence of equivalence.
+
+\section{Conclusion}
+
+This study examines cross-layer weight sharing and structured
+compression in a small-footprint KWS Transformer.
+The reported tied model uses 36,516 unique parameters and reaches
+$94.15\pm0.33\%$ accuracy on GSC v1-12 over five seeds.
+Its untied counterpart stores approximately six times as many
+parameters and reaches $94.74\pm0.35\%$ across five seeds,
+a higher descriptive mean over the same number of seeds.
+
+Structured pruning and dynamic linear quantization produce a
+29,861-parameter model at $93.83\pm0.41\%$.
+Training the same reduced architecture from scratch yields a
+nearby mean accuracy, without evidence that prune-then-fine-tune
+has an accuracy advantage.
+
+The central implication is a storage--computation trade-off,
+not a claim of universal Transformer efficiency.
+Establishing when sharing and GQA are preferable requires
+parameter-matched architecture controls.
+Audited MAC totals, storage sizes, and host latency are reported
+above; stronger deployment claims would need matched embedded
+targets and energy measurements.
+
+\section*{Reproducibility}
+
+Training and evaluation scripts, model definitions, measurement
+utilities, and machine-readable tables are intended for release at
+\url{https://github.com/alizare84/LightTransformerKWS2-}.
+At submission time, confirm that the public tree includes the
+revision scripts and \texttt{results/*.csv} files cited here; large
+checkpoints and the Speech Commands cache remain excluded
+(\texttt{ARTIFACT\_RELEASE.md}).
+A Zenodo DOI for a frozen release tag should be added once the
+queued revision experiments are merged.
+
+\section*{Acknowledgments}
+
+Generative AI tools (large language models) were used to assist with
+drafting and copy-editing of manuscript text and with scaffolding of
+analysis scripts.
+They were not used to invent experimental results, and they are not
+authors of this work.
+All numerical claims, tables, and scientific conclusions were
+checked by the author against logs and checkpoints.
+At submission time, any additional venue-specific AI-use declaration
+(cover letter checkbox or dedicated statement) will follow the
+target journal's current policy.
+
+\section*{Compliance with Ethical Standards}
+
+This study uses the publicly available Google Speech Commands
+corpus and collects no new human-subject data.
+Any additional declarations should follow the requirements of
+the target journal and the author's institution.
+
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}
