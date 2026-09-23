@@ -61,18 +61,29 @@ def evaluate_datagen(model, dg, part, device, eval_batch=256):
             pred = model(data_t).view(-1, 12).argmax(dim=1)
             correct += (pred == tgt_t).sum().item()
             total += tgt_t.numel()
-    else:  # test — fetch in one big batch to avoid 3081 individual calls
-        n_test = dg.dataLen("test")
-        # Use audio_processor.get_data with full set size
-        data_np, tgt_np = dg.audio_processor.get_data(
-            n_test, 0, dg.flags, 0.0, 0.0, 0, 'testing', 0.0, 0.0, dg.sess)
-        data_t = torch.from_numpy(data_np.astype("float32")).to(device)
-        tgt_t = torch.from_numpy(tgt_np.astype("int64")).to(device).view(-1)
-        # Evaluate in mini-batches to avoid OOM
-        for s in range(0, len(tgt_t), eval_batch):
-            pred = model(data_t[s:s+eval_batch]).view(-1, 12).argmax(dim=1)
-            correct += (pred == tgt_t[s:s+eval_batch]).sum().item()
-            total += tgt_t[s:s+eval_batch].numel()
+    else:  # test — use validation-batch approach (batch_size chunks)
+        # getData("test", offset) returns 1 sample at a time, which is slow.
+        # Instead use audio_processor.get_data with batch_size chunks.
+        n_test = dg.dataLen("test")  # total number of test samples
+        bs = dg.flags.batch_size     # reuse configured batch size
+        n_full = n_test // bs
+        remainder = n_test % bs
+        for i in range(n_full):
+            data_np, tgt_np = dg.audio_processor.get_data(
+                bs, i * bs, dg.flags, 0.0, 0.0, 0, 'testing', 0.0, 0.0, dg.sess)
+            data_t = torch.from_numpy(data_np.astype("float32")).to(device)
+            tgt_t = torch.from_numpy(tgt_np.astype("int64")).to(device).view(-1)
+            pred = model(data_t).view(-1, 12).argmax(dim=1)
+            correct += (pred == tgt_t).sum().item()
+            total += tgt_t.numel()
+        if remainder > 0:
+            data_np, tgt_np = dg.audio_processor.get_data(
+                remainder, n_full * bs, dg.flags, 0.0, 0.0, 0, 'testing', 0.0, 0.0, dg.sess)
+            data_t = torch.from_numpy(data_np.astype("float32")).to(device)
+            tgt_t = torch.from_numpy(tgt_np.astype("int64")).to(device).view(-1)
+            pred = model(data_t).view(-1, 12).argmax(dim=1)
+            correct += (pred == tgt_t).sum().item()
+            total += tgt_t.numel()
 
     return 100.0 * correct / max(total, 1)
 
@@ -104,6 +115,20 @@ def main():
           f"test samples={dg.dataLen('test')}")
     sys.stdout.flush()
 
+    # Pre-load all training batches into RAM to avoid repeated TF1 session calls
+    # 43 batches × 512 samples × 98×40 floats ≈ 344 MB — fits comfortably.
+    print("Pre-loading training data into RAM (avoids repeated TF1 session calls)...")
+    sys.stdout.flush()
+    train_cache = []
+    for i in range(n_train_batches):
+        data_np, tgt_np = dg.getData("train", i)
+        train_cache.append((data_np.copy(), tgt_np.copy()))
+        if (i + 1) % 10 == 0:
+            print(f"  cached {i+1}/{n_train_batches} batches")
+            sys.stdout.flush()
+    print(f"  done. {len(train_cache)} batches cached.")
+    sys.stdout.flush()
+
     rows = []
     for seed in seeds:
         ckpt = Path(f"checkpoints/dense_A3_seed{seed}.pth")
@@ -128,7 +153,7 @@ def main():
 
         for step in range(args.steps):
             batch_idx = step % n_train_batches
-            data, target = dg.getData("train", batch_idx)
+            data, target = train_cache[batch_idx]   # use pre-loaded cache
             data_t = torch.from_numpy(data).float().to(device)
             tgt_t = torch.from_numpy(target).long().to(device).view(-1)
             opt.zero_grad()

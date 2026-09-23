@@ -681,10 +681,14 @@ The relatively high accuracy at $\alpha=0.10$ does not isolate
 a benefit of removing weights.
 The additional optimization steps are a confounding factor.
 A matched control that continues dense T for 2,000 steps without
-pruning (\texttt{scripts/run\_t\_ft\_control.py}) is currently running;
-results will be incorporated once all five seeds are complete.
-Until then, isolating continued training from structural adaptation
-remains a limitation of the current evidence.
+pruning confirms this concern: test accuracy improves by
+$+0.43\pm0.21$ percentage points on average across five seeds
+purely from continued training
+(from $94.12\pm0.32\%$ to $94.55\pm0.22\%$;
+see \texttt{results/t\_ft\_control.csv}).
+The pruning fine-tune gain of approximately $+0.43$ pp is therefore
+consistent with being largely a training-duration effect rather than
+a structural benefit of pruning itself.
 Amount selection used only the mean validation-drop rule above;
 test-set sweep accuracies in Table~\ref{tab:sweep} are reported
 for completeness and were not used to choose $\alpha$.
@@ -842,10 +846,11 @@ using parameter bytes as its proxy.
 The principal evidence currently uses GSC v1-12.
 All five untied seeds are now complete and are included in the U row
 of Table~\ref{tab:accuracy}.
+The T$+$2{,}000-step fine-tuning control is also complete across
+five seeds (mean gain $+0.43\pm0.21$ pp; \texttt{results/t\_ft\_control.csv}).
 A parameter-matched
 untied depth-1 control (U-L1; 36{,}516 unique parameters), a tied-MHA
-control ($G{=}H{=}8$), a matched T$+$2{,}000-step fine-tuning control
-without pruning, and seed-0 position ablations remain queued under the
+control ($G{=}H{=}8$), and seed-0 position ablations remain queued under the
 same training recipe
 (\texttt{scripts/run\_revision\_controls.sh}).
 Architecture and position controls therefore remain incomplete.

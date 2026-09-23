@@ -1,0 +1,88 @@
+Device: cuda  seeds=[0, 1, 2, 3, 4]  steps=2000  lr=0.0001
+Initializing Datagen (TF1 AudioProcessor — may take a few minutes)...
+  train batches=43  val batches=6  test samples=3081
+Pre-loading training data into RAM (avoids repeated TF1 session calls)...
+  cached 10/43 batches
+  cached 20/43 batches
+  cached 30/43 batches
+  cached 40/43 batches
+  done. 43 batches cached.
+
+===== seed=0 T+2000 FT control =====
+  before val=92.48% test=93.87%
+  step 200/2000  loss=0.7958
+  step 400/2000  loss=0.7685
+  step 600/2000  loss=0.7596
+  step 800/2000  loss=0.7242
+  step 1000/2000  loss=0.7456
+  step 1200/2000  loss=0.7492
+  step 1400/2000  loss=0.7463
+  step 1600/2000  loss=0.7199
+  step 1800/2000  loss=0.6900
+  step 2000/2000  loss=0.6944
+  after  val=93.65% test=94.42%  delta_test=+0.55 pp
+  saved to results/t_ft_control_seed0/
+
+===== seed=1 T+2000 FT control =====
+  before val=92.61% test=94.09%
+  step 200/2000  loss=0.7877
+  step 400/2000  loss=0.7454
+  step 600/2000  loss=0.7560
+  step 800/2000  loss=0.7354
+  step 1000/2000  loss=0.7239
+  step 1200/2000  loss=0.7497
+  step 1400/2000  loss=0.7098
+  step 1600/2000  loss=0.7205
+  step 1800/2000  loss=0.6833
+  step 2000/2000  loss=0.7011
+  after  val=92.42% test=94.71%  delta_test=+0.62 pp
+  saved to results/t_ft_control_seed1/
+
+===== seed=2 T+2000 FT control =====
+  before val=92.42% test=94.64%
+  step 200/2000  loss=0.7739
+  step 400/2000  loss=0.7695
+  step 600/2000  loss=0.7759
+  step 800/2000  loss=0.7399
+  step 1000/2000  loss=0.7304
+  step 1200/2000  loss=0.7453
+  step 1400/2000  loss=0.7402
+  step 1600/2000  loss=0.7301
+  step 1800/2000  loss=0.6999
+  step 2000/2000  loss=0.7078
+  after  val=92.45% test=94.77%  delta_test=+0.13 pp
+  saved to results/t_ft_control_seed2/
+
+===== seed=3 T+2000 FT control =====
+  before val=93.00% test=93.96%
+  step 200/2000  loss=0.7943
+  step 400/2000  loss=0.7611
+  step 600/2000  loss=0.7588
+  step 800/2000  loss=0.7460
+  step 1000/2000  loss=0.7166
+  step 1200/2000  loss=0.7392
+  step 1400/2000  loss=0.7202
+  step 1600/2000  loss=0.7197
+  step 1800/2000  loss=0.6956
+  step 2000/2000  loss=0.7163
+  after  val=93.20% test=94.22%  delta_test=+0.26 pp
+  saved to results/t_ft_control_seed3/
+
+===== seed=4 T+2000 FT control =====
+  before val=94.37% test=94.03%
+  step 200/2000  loss=0.8015
+  step 400/2000  loss=0.7644
+  step 600/2000  loss=0.7544
+  step 800/2000  loss=0.7290
+  step 1000/2000  loss=0.7273
+  step 1200/2000  loss=0.7390
+  step 1400/2000  loss=0.7422
+  step 1600/2000  loss=0.7085
+  step 1800/2000  loss=0.6924
+  step 2000/2000  loss=0.7036
+  after  val=93.95% test=94.61%  delta_test=+0.58 pp
+  saved to results/t_ft_control_seed4/
+
+Wrote results/t_ft_control.csv
+
+All done.
